@@ -2,11 +2,21 @@ import os
 import json
 import random
 from datetime import datetime 
-from aiogram import Bot, Dispatcher, types# type: ignore
-from aiogram.filters import Command# type: ignore
-from aiogram.types import Message, InlineQuery, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery # type: ignore
-from dotenv import load_dotenv# type: ignore
-from aiogram.utils.keyboard import InlineKeyboardBuilder # type: ignore
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import Message, InlineQuery, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
+from dotenv import load_dotenv
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+import logging
+
+# Конфигурация webhook
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://yourdomain.com")  # Из .env файла
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+WEBAPP_HOST = "0.0.0.0"
+WEBAPP_PORT = int(os.getenv("PORT", 10000))  # Render использует PORT=10000
 
 async def get_top_text(top_type: str):
     if not players:
@@ -63,18 +73,12 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATA_FILE = "players.json"
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-# Загружаем или создаём базу
-if os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        players = json.load(f)
-else:
-    players = {}
-
-pending_fights = {}  # Для хранения активных вызовов на бой
-message_owners = {}  # Для хранения владельцев сообщений {message_id: user_id}
+# Глобальные переменные
+bot = None
+dp = None
+players = {}
+pending_fights = {}
+message_owners = {}
 
 ADMIN_ID = 887888895
 
@@ -94,6 +98,15 @@ def save_players():
     """Сохранение данных игроков"""
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(players, f, ensure_ascii=False, indent=2)
+
+def load_players():
+    """Загрузка данных игроков"""
+    global players
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            players = json.load(f)
+    else:
+        players = {}
 
 def get_name(user: types.User):
     """Получение имени пользователя"""
@@ -208,7 +221,6 @@ def get_fight_keyboard(attacker_id: str) -> InlineKeyboardMarkup:
 # INLINE HANDLERS
 # ===================
 
-@dp.inline_query()
 async def inline_query_handler(query: InlineQuery):
     """Обработчик inline запросов"""
     user_id = str(query.from_user.id)
@@ -232,13 +244,12 @@ async def inline_query_handler(query: InlineQuery):
 # CALLBACK HANDLERS
 # ===================
 
-@dp.callback_query(lambda c: c.data.startswith("profile_"))
 async def callback_profile(callback: CallbackQuery):
     """Показ профиля через callback с проверкой владельца"""
     # Извлекаем ID владельца из callback_data
     owner_id = callback.data.replace("profile_", "")
     user_id = str(callback.from_user.id)
-    user = callback.from_user  # <--- добавь эту строку
+    user = callback.from_user
 
     # Проверяем, что пользователь может видеть только свой профиль
     if owner_id != user_id:
@@ -281,7 +292,6 @@ async def callback_profile(callback: CallbackQuery):
         )
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("grow_"))
 async def callback_grow(callback: CallbackQuery):
     """Рост огурца через callback с проверкой владельца"""
     # Извлекаем ID владельца из callback_data
@@ -358,7 +368,6 @@ async def callback_grow(callback: CallbackQuery):
         )
     await callback.answer("Ты вырос! 🌱")
 
-@dp.callback_query(lambda c: c.data.startswith("attack_"))
 async def callback_attack(callback: CallbackQuery):
     """Вызов на бой через callback (убираем проверку владельца для атаки)"""
     # Извлекаем ID владельца из callback_data
@@ -399,7 +408,6 @@ async def callback_attack(callback: CallbackQuery):
     
     await callback.answer("Ты готов к бою! ⚔️")
 
-@dp.callback_query(lambda c: c.data.startswith("accept_"))
 async def callback_fight_accept(callback: CallbackQuery):
     fight_id = callback.data.replace("accept_", "")
     if fight_id not in pending_fights:
@@ -444,7 +452,6 @@ async def callback_fight_accept(callback: CallbackQuery):
         attacker["defense"] += winner_defense_bonus
         defender["attack"] -= winner_attack_bonus
         defender["defense"] -= winner_defense_bonus
-        # ↓↓↓ Добавь это ↓↓↓
         try:
             attacker_user = await bot.get_chat(int(attacker_id))
             attacker_name = f"@{attacker_user.username}" if attacker_user.username else attacker_user.full_name[:20]
@@ -524,7 +531,6 @@ async def callback_fight_accept(callback: CallbackQuery):
     
     await callback.answer("Бой завершен! ⚔️")
 
-@dp.callback_query(lambda c: c.data.startswith("back_to_menu_"))
 async def callback_back_to_menu(callback: CallbackQuery):
     """Возврат к главному меню с проверкой владельца"""
     # Извлекаем ID владельца из callback_data
@@ -553,7 +559,6 @@ async def callback_back_to_menu(callback: CallbackQuery):
         )
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data.startswith("top_"))
 async def callback_top_table(callback: CallbackQuery):
     top_type = callback.data.replace("top_", "")
     owner_id = str(callback.from_user.id)
@@ -576,7 +581,6 @@ async def callback_top_table(callback: CallbackQuery):
 # ОБЫЧНЫЕ КОМАНДЫ (для совместимости)
 # ===================
 
-@dp.message(Command("start"))
 async def cmd_start(message: Message):
     """Команда старт"""
     user_id = str(message.from_user.id)
@@ -599,7 +603,6 @@ async def cmd_start(message: Message):
         parse_mode="Markdown"
     )
 
-@dp.message(Command("grow"))
 async def cmd_grow(message: Message):
     """Команда роста (совместимость)"""
     user_id = str(message.from_user.id)
@@ -632,7 +635,6 @@ async def cmd_grow(message: Message):
         parse_mode="Markdown"
     )
 
-@dp.message(Command("profile"))
 async def cmd_profile(message: Message):
     """Команда профиля (совместимость)"""
     user_id = str(message.from_user.id)
@@ -641,7 +643,6 @@ async def cmd_profile(message: Message):
     profile_text = get_profile_text(user_id, message.from_user)
     await message.answer(profile_text)
 
-@dp.message(Command("fight"))
 async def cmd_fight(message: Message):
     """Команда боя (совместимость)"""
     if not message.reply_to_message:
@@ -664,7 +665,6 @@ async def cmd_fight(message: Message):
         reply_markup=get_fight_keyboard(user_id)
     )
 
-@dp.message(Command("admin_reset_all"))
 async def admin_reset_all(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("Нет доступа.")
@@ -680,7 +680,6 @@ async def admin_reset_all(message: Message):
     save_players()
     await message.answer("✅ Все пользователи сброшены.")
 
-@dp.message(Command("admin_reset"))
 async def admin_reset(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("Нет доступа.")
@@ -699,7 +698,6 @@ async def admin_reset(message: Message):
     save_players()
     await message.answer(f"✅ Пользователь {get_name(message.reply_to_message.from_user)} сброшен.")
 
-@dp.message(Command("admin_set"))
 async def admin_set(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("Нет доступа.")
@@ -724,13 +722,93 @@ async def admin_set(message: Message):
     players[target_id]["defense"] = defense
     save_players()
     await message.answer(f"✅ Установлено {attack}см и {defense} lvl для {get_name(message.reply_to_message.from_user)}.")
-@dp.message(Command("top"))
+
 async def cmd_top(message: Message):
     user_id = str(message.from_user.id)
     text = await get_top_text("wins")
     kb = get_top_keyboard("wins", user_id)
     await message.answer(text, reply_markup=kb)
+
+# ===================
+# WEBHOOK SETUP
+# ===================
+
+async def on_startup(bot: Bot) -> None:
+    """Установка webhook при старте"""
+    await bot.set_webhook(url=WEBHOOK_URL)
+    print(f"✅ Webhook установлен: {WEBHOOK_URL}")
+
+async def on_shutdown(bot: Bot) -> None:
+    """Удаление webhook при остановке"""
+    await bot.delete_webhook()
+    print("❌ Webhook удален")
+
+def create_app() -> web.Application:
+    """Создание aiohttp приложения с настройкой bot и dispatcher"""
+    global bot, dp
+    
+    # Инициализация bot и dispatcher
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+    
+    # Загружаем данные игроков
+    load_players()
+    
+    # Регистрация inline handlers
+    dp.inline_query.register(inline_query_handler)
+    
+    # Регистрация callback handlers
+    dp.callback_query.register(callback_profile, lambda c: c.data.startswith("profile_"))
+    dp.callback_query.register(callback_grow, lambda c: c.data.startswith("grow_"))
+    dp.callback_query.register(callback_attack, lambda c: c.data.startswith("attack_"))
+    dp.callback_query.register(callback_fight_accept, lambda c: c.data.startswith("accept_"))
+    dp.callback_query.register(callback_back_to_menu, lambda c: c.data.startswith("back_to_menu_"))
+    dp.callback_query.register(callback_top_table, lambda c: c.data.startswith("top_"))
+    
+    # Регистрация команд
+    dp.message.register(cmd_start, Command("start"))
+    dp.message.register(cmd_grow, Command("grow"))
+    dp.message.register(cmd_profile, Command("profile"))
+    dp.message.register(cmd_fight, Command("fight"))
+    dp.message.register(admin_reset_all, Command("admin_reset_all"))
+    dp.message.register(admin_reset, Command("admin_reset"))
+    dp.message.register(admin_set, Command("admin_set"))
+    dp.message.register(cmd_top, Command("top"))
+    
+    # Регистрация startup/shutdown обработчиков
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    
+    # Создание aiohttp приложения
+    app = web.Application()
+    
+    # Настройка webhook handler
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    
+    # Настройка приложения
+    setup_application(app, dp, bot=bot)
+    
+    return app
+
+def main() -> None:
+    """Основная функция запуска"""
+    # Настройка логирования
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    print("🚀 Запуск RPG H&C бота в webhook режиме...")
+    print(f"📡 Webhook URL: {WEBHOOK_URL}")
+    print(f"🌐 Сервер запускается на {WEBAPP_HOST}:{WEBAPP_PORT}")
+    
+    # Создание и запуск приложения
+    app = create_app()
+    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
+
 if __name__ == "__main__":
-    import asyncio
-    print("🚀 RPG H&C бот запущен!")
-    asyncio.run(dp.start_polling(bot))
+    main()
