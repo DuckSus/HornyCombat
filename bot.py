@@ -11,13 +11,6 @@ from dotenv import load_dotenv
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import logging
 
-# Конфигурация webhook
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://yourdomain.com")  # Из .env файла
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.getenv("PORT", 10000))  # Render использует PORT=10000
-
 async def get_top_text(top_type: str):
     if not players:
         return "Нет данных для таблицы лидеров."
@@ -811,4 +804,5 @@ def main() -> None:
     web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
 
 if __name__ == "__main__":
+
     main()
